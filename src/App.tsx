@@ -1,13 +1,16 @@
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import CueTable, { type FilterMode } from './components/CueTable'
 import PlanImportDialog from './components/PlanImportDialog'
+import VideoPreview from './components/VideoPreview'
 import { buildSrt, type Cue, parseSrt } from './lib/srt'
 import {
   buildAnchors,
   mapCues,
   validateMapped,
   type Anchor,
+  type MappedLine,
 } from './lib/anchor'
+import { activeLines, seekTargetSec } from './lib/sync'
 import { formatTime, parseTime } from './lib/time'
 import { parsePlan, previewPlan, serializePlan, type PlanPreview } from './lib/plan'
 import { SAMPLE_SRT } from './sample'
@@ -27,12 +30,24 @@ export default function App() {
   const [dragging, setDragging] = useState(false)
   const [planPreview, setPlanPreview] = useState<PlanPreview | null>(null)
   const [planFileName, setPlanFileName] = useState('')
+  const [videoUrl, setVideoUrl] = useState<string | null>(null)
+  const [videoName, setVideoName] = useState('')
+  const [playMs, setPlayMs] = useState(0)
   const fileRef = useRef<HTMLInputElement>(null)
   const planFileRef = useRef<HTMLInputElement>(null)
+  const videoFileRef = useRef<HTMLInputElement>(null)
+  const videoRef = useRef<HTMLVideoElement | null>(null)
+  /** 当前持有的视频对象 URL，用于在替换 / 卸载 / 组件卸载时精确释放。 */
+  const videoUrlRef = useRef<string | null>(null)
   const noticeTimer = useRef<number | undefined>(undefined)
 
   const lines = useMemo(() => (cues ? mapCues(cues, anchors) : []), [cues, anchors])
   const issues = useMemo(() => validateMapped(lines), [lines])
+  /** 当前播放时刻处于有效区间内的字幕；锚点编辑改变 lines 时会立即重算。 */
+  const activeIndices = useMemo(
+    () => (videoUrl ? new Set(activeLines(lines, playMs).map((l) => l.index)) : null),
+    [lines, playMs, videoUrl],
+  )
   const errorCount = useMemo(() => {
     const set = new Set<number>()
     for (const index of issues.keys()) set.add(index)
@@ -44,6 +59,60 @@ export default function App() {
     setNotice(n)
     window.clearTimeout(noticeTimer.current)
     noticeTimer.current = window.setTimeout(() => setNotice(null), 3500)
+  }, [])
+
+  /** 释放当前持有的视频对象 URL（若有）。 */
+  const revokeVideoUrl = useCallback(() => {
+    if (videoUrlRef.current) {
+      URL.revokeObjectURL(videoUrlRef.current)
+      videoUrlRef.current = null
+    }
+  }, [])
+
+  // 组件卸载时释放仍持有的对象 URL
+  useEffect(() => revokeVideoUrl, [revokeVideoUrl])
+
+  /** 载入本地视频：仅通过对象 URL 在本地使用；替换前先释放旧 URL。 */
+  const loadVideo = useCallback(
+    (file: File) => {
+      revokeVideoUrl()
+      const url = URL.createObjectURL(file)
+      videoUrlRef.current = url
+      setVideoUrl(url)
+      setVideoName(file.name)
+      setPlayMs(0)
+      flash({ level: 'info', text: `已载入视频「${file.name}」，仅通过对象 URL 在本地播放，不会上传。` })
+    },
+    [flash, revokeVideoUrl],
+  )
+
+  /** 卸载视频并释放其对象 URL。 */
+  const unloadVideo = useCallback(() => {
+    revokeVideoUrl()
+    setVideoUrl(null)
+    setVideoName('')
+    setPlayMs(0)
+    flash({ level: 'info', text: '已卸载视频并释放其对象 URL。' })
+  }, [flash, revokeVideoUrl])
+
+  const onVideoError = useCallback(() => {
+    revokeVideoUrl()
+    setVideoUrl(null)
+    setVideoName('')
+    setPlayMs(0)
+    flash({
+      level: 'error',
+      text: '无法播放该视频：浏览器不支持此格式或文件已损坏，已卸载。请换用浏览器可播放的格式（如 MP4/H.264、WebM）。',
+    })
+  }, [flash, revokeVideoUrl])
+
+  /** 点击字幕行：跳到其校准后起始时间，超出视频时长则停在末尾。 */
+  const seekToLine = useCallback((line: MappedLine) => {
+    const video = videoRef.current
+    if (!video) return
+    video.currentTime = seekTargetSec(line.newStart, video.duration)
+    // 立即同步高亮，不等 timeupdate 事件
+    setPlayMs(Math.round(video.currentTime * 1000))
   }, [])
 
   /** 在修改锚点之前压栈，用于“撤销最近一次锚点操作”。 */
@@ -69,6 +138,13 @@ export default function App() {
       setFilter('all')
       setPlanPreview(null)
       setPlanFileName('')
+      // 保留已载入的视频，但重置播放位置
+      const video = videoRef.current
+      if (video) {
+        video.pause()
+        video.currentTime = 0
+      }
+      setPlayMs(0)
       flash({
         level: 'info',
         text:
@@ -310,7 +386,7 @@ export default function App() {
     >
       <header className="app-header">
         <h1>SRT 字幕时间轴校准工具</h1>
-        <p className="subtitle">本地运行 · 分段线性锚点校准 · 实时重算 · 校验通过后导出</p>
+        <p className="subtitle">本地运行 · 分段线性锚点校准 · 本地视频同步预览 · 校验通过后导出</p>
       </header>
 
       <section className="toolbar">
@@ -416,6 +492,42 @@ export default function App() {
       ) : (
         <>
           <Rules anchors={anchors} />
+          <section className="preview-section">
+            <input
+              ref={videoFileRef}
+              type="file"
+              accept="video/*"
+              hidden
+              onChange={(e) => {
+                const f = e.target.files?.[0]
+                if (f) loadVideo(f)
+                e.target.value = ''
+              }}
+            />
+            {videoUrl ? (
+              <VideoPreview
+                url={videoUrl}
+                name={videoName}
+                lines={lines}
+                currentMs={playMs}
+                videoRef={videoRef}
+                onTimeChange={setPlayMs}
+                onReplace={() => videoFileRef.current?.click()}
+                onUnload={unloadVideo}
+                onError={onVideoError}
+              />
+            ) : (
+              <div className="preview-empty">
+                <span>
+                  🎬 可选择一个浏览器可播放的本地视频做同步预览：文件仅通过对象 URL
+                  在本地使用，不会上传。
+                </span>
+                <button className="btn" onClick={() => videoFileRef.current?.click()}>
+                  选择视频文件
+                </button>
+              </div>
+            )}
+          </section>
           <CueTable
             lines={lines}
             anchors={anchors}
@@ -424,6 +536,8 @@ export default function App() {
             onAddAnchor={addAnchor}
             onRemoveAnchor={removeAnchor}
             onEditAnchor={editAnchor}
+            activeIndices={activeIndices}
+            onSeekTo={videoUrl ? seekToLine : undefined}
           />
           {hasErrors && (
             <div className="export-blocked">

@@ -1,6 +1,7 @@
 import { parseTime, formatTime } from '../src/lib/time'
 import { parseSrt, buildSrt, type Cue } from '../src/lib/srt'
-import { buildAnchors, mapTimestamp, mapCues, validateMapped } from '../src/lib/anchor'
+import { buildAnchors, mapTimestamp, mapCues, validateMapped, type MappedLine } from '../src/lib/anchor'
+import { activeLines, effectiveRange, seekTargetSec } from '../src/lib/sync'
 import {
   normalizeText,
   parsePlan,
@@ -129,6 +130,53 @@ const e2eIssues = validateMapped(e2e)
 assert(e2e[0].newStart === 3000, '第一条映射到目标 3s')
 assert(e2e[6].newStart === 60000, '最后一条映射到目标 60s')
 assert(e2e.every((l) => l.newStart >= 0 && l.newEnd > l.newStart), '外推后无非负/非正问题')
+
+// ---- 视频同步预览：当前字幕计算 ----
+console.log('视频同步：当前字幕')
+const mkLine = (index: number, newStart: number, newEnd: number): MappedLine => ({
+  index,
+  id: String(index + 1),
+  start: 0,
+  end: 0,
+  text: '',
+  newStart,
+  newEnd,
+})
+const ids = (list: MappedLine[]) => list.map((l) => l.id).join(',')
+
+// 以校准后起止时间为准，区间左闭右开
+const ov = [mkLine(0, 1000, 5000), mkLine(1, 3000, 7000)]
+assert(ids(activeLines(ov, 999)) === '', '起始前无字幕')
+assert(ids(activeLines(ov, 1000)) === '1', '起始时刻包含（左闭）')
+assert(ids(activeLines(ov, 5000)) === '2', '结束时刻不包含（右开）')
+assert(ids(activeLines(ov, 4000)) === '1,2', '时间重叠时按字幕顺序同时展示')
+assert(ids(activeLines(ov, 6000)) === '2', '重叠区之后仅剩后一条')
+assert(ids(activeLines(ov, 8000)) === '', '全部结束后无字幕')
+
+// 负时间字幕不提前显示：起始钳到 0，结束时间不变
+assert(effectiveRange(mkLine(0, -500, 1500)).join(',') === '0,1500', '负起始时间钳到 0')
+const negStart = [mkLine(0, -500, 1500)]
+assert(ids(activeLines(negStart, 0)) === '1', '负起始字幕从 t=0 起显示')
+assert(ids(activeLines(negStart, 1499)) === '1' && ids(activeLines(negStart, 1500)) === '', '负起始字幕仍按原结束时间消失')
+const allNeg = [mkLine(0, -2000, -1000)]
+assert(ids(activeLines(allNeg, 0)) === '' && ids(activeLines(allNeg, 60000)) === '', '整体为负的字幕任何时刻都不显示')
+const nonPos = [mkLine(0, 2000, 2000)]
+assert(ids(activeLines(nonPos, 2000)) === '', '时长非正的字幕不显示')
+
+// 锚点编辑（映射变化）后，同一播放时刻的命中集合立即变化
+const identityLines = mapCues(cues, [])
+assert(ids(activeLines(identityLines, 2000)) === '1', '校准前 t=2s 命中第 1 条')
+const shiftedLines = mapCues(cues, [{ source: cues[0].start, target: cues[0].start + 10000 }])
+assert(ids(activeLines(shiftedLines, 2000)) === '', '整体后移 10s 后 t=2s 不再命中')
+assert(ids(activeLines(shiftedLines, 12000)) === '1', '整体后移 10s 后 t=12s 命中第 1 条')
+
+// ---- 视频同步预览：点击跳转目标 ----
+console.log('视频同步：点击跳转')
+assert(seekTargetSec(3000, 10) === 3, '跳转目标为校准后起始时间（秒）')
+assert(seekTargetSec(-1500, 10) === 0, '负起始时间钳到 0')
+assert(seekTargetSec(20000, 10) === 10, '超出视频时长停在末尾')
+assert(seekTargetSec(9500, 10) === 9.5, '时长之内不钳制')
+assert(seekTargetSec(3000, NaN) === 3, '时长未知（元数据未加载）时不钳制')
 
 // ---- 锚点方案：规范化 ----
 console.log('文本规范化')

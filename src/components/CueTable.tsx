@@ -13,6 +13,10 @@ interface Props {
   onAddAnchor: (index: number) => void
   onRemoveAnchor: (source: number) => void
   onEditAnchor: (source: number, targetText: string) => boolean
+  /** 当前播放时刻处于有效区间内的字幕 index 集合（未载入视频时为 null）。 */
+  activeIndices?: Set<number> | null
+  /** 载入视频后提供：点击字幕行跳转到其校准后起始时间。 */
+  onSeekTo?: (line: MappedLine) => void
 }
 
 function formatDelta(ms: number): string {
@@ -29,6 +33,8 @@ export default function CueTable({
   onAddAnchor,
   onRemoveAnchor,
   onEditAnchor,
+  activeIndices,
+  onSeekTo,
 }: Props) {
   const anchorBySource = new Map(anchors.map((a) => [a.source, a]))
 
@@ -37,6 +43,13 @@ export default function CueTable({
     if (filter === 'errors') return issues.has(line.index)
     return true
   })
+
+  /** 点击行跳转；行内的按钮 / 输入框等交互元素不触发。 */
+  const rowClick = (e: React.MouseEvent, line: MappedLine) => {
+    if (!onSeekTo) return
+    if ((e.target as HTMLElement).closest('button, input, select, textarea, a')) return
+    onSeekTo(line)
+  }
 
   return (
     <div className="table-wrap">
@@ -57,8 +70,21 @@ export default function CueTable({
             const anchor = anchorBySource.get(line.start)
             const lineIssues = issues.get(line.index) ?? []
             const hasError = lineIssues.length > 0
+            const isActive = activeIndices?.has(line.index) ?? false
+            const rowClass = [
+              hasError ? 'row-error' : '',
+              isActive ? 'row-active' : '',
+              onSeekTo ? 'row-clickable' : '',
+            ]
+              .filter(Boolean)
+              .join(' ')
             return (
-              <tr key={line.index} className={hasError ? 'row-error' : ''}>
+              <tr
+                key={line.index}
+                className={rowClass}
+                onClick={onSeekTo ? (e) => rowClick(e, line) : undefined}
+                title={onSeekTo ? '点击跳转到该校准后起始时间' : undefined}
+              >
                 <td className="col-no">{line.id}</td>
                 <td className="col-time mono">
                   <span className={line.newStart < 0 ? 'bad-time' : ''}>

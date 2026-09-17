@@ -416,6 +416,110 @@ body {
   font-weight: 600;
 }
 
+/* ---------- 本地视频同步预览 ---------- */
+.preview-section {
+  margin-bottom: 14px;
+}
+
+.preview-empty {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  background: var(--bg-elev);
+  border: 1px dashed var(--border-strong);
+  border-radius: 10px;
+  padding: 14px 16px;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.video-preview {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 16px 16px;
+}
+
+.video-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  margin-bottom: 10px;
+}
+
+.video-name {
+  font-weight: 600;
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.video-time {
+  color: var(--text-dim);
+}
+
+.video-head-spacer {
+  flex: 1;
+}
+
+.video-stage {
+  position: relative;
+  background: #000;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.video-stage video {
+  display: block;
+  width: 100%;
+  max-height: 48vh;
+  background: #000;
+}
+
+.subtitle-overlay {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 12%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 0 24px;
+  pointer-events: none;
+}
+
+.subtitle-line {
+  background: rgba(0, 0, 0, 0.68);
+  color: #fff;
+  font-size: 16px;
+  line-height: 1.45;
+  padding: 2px 12px;
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  text-align: center;
+  max-width: 92%;
+}
+
+/* 播放进度命中的字幕行（置于 .row-error 之后，使高亮在错误行上也可辨识） */
+.row-active {
+  background: rgba(79, 140, 255, 0.16);
+  box-shadow: inset 3px 0 0 var(--primary);
+}
+
+.row-active:hover {
+  background: rgba(79, 140, 255, 0.22);
+}
+
+.row-clickable {
+  cursor: pointer;
+}
+
+
 /* ---------- Empty state ---------- */
 .empty-state {
   display: flex;
