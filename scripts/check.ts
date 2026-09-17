@@ -1,6 +1,7 @@
 import { parseTime, formatTime } from '../src/lib/time'
 import { parseSrt, buildSrt, type Cue } from '../src/lib/srt'
 import { buildAnchors, mapTimestamp, mapCues, validateMapped } from '../src/lib/anchor'
+import { activeCueIndexes, clampSeekTime } from '../src/lib/sync'
 import {
   normalizeText,
   parsePlan,
@@ -383,6 +384,43 @@ if ('plan' in e2ePlanRes) {
     '端到端锚点值一致',
   )
 }
+
+// ---- 同步预览：当前字幕计算 ----
+console.log('同步预览：当前字幕计算')
+const syncLine = (index: number, newStart: number, newEnd: number) => ({
+  index,
+  id: String(index + 1),
+  start: 0,
+  end: 0,
+  text: `t${index}`,
+  newStart,
+  newEnd,
+})
+const syncLines = [
+  syncLine(0, 1000, 4000),
+  syncLine(1, 2000, 3000), // 与第 1 条重叠
+  syncLine(2, -500, 2500), // 负时间：不提前显示
+  syncLine(3, 5000, 5000), // 零时长：不显示
+]
+const syncIds = (t: number) => activeCueIndexes(syncLines, t).join(',')
+assert(syncIds(0) === '', '0 时刻无字幕（负时间字幕不提前显示）')
+assert(syncIds(500) === '', '负时间字幕在 0.5s 仍不显示')
+assert(syncIds(1000) === '0', '起始边界包含（t == newStart 显示）')
+assert(syncIds(2500) === '0,1', '时间重叠时按字幕顺序同时展示')
+assert(syncIds(3000) === '0', '结束边界互斥（t == newEnd 不显示）')
+assert(syncIds(4000) === '', '结束后不显示')
+assert(syncIds(5000) === '', '零时长字幕不显示')
+
+// 即使校准后时间乱序，重叠展示也按字幕原始顺序而非时间顺序
+const unorderedSync = [syncLine(0, 3000, 6000), syncLine(1, 1000, 5000)]
+assert(activeCueIndexes(unorderedSync, 4000).join(',') === '0,1', '重叠展示按字幕顺序而非时间顺序')
+
+// ---- 同步预览：点击跳转夹取 ----
+console.log('同步预览：点击跳转夹取')
+assert(clampSeekTime(5000, 10) === 5, '时长范围内原样跳转')
+assert(clampSeekTime(15000, 10) === 10, '超出视频时长停在末尾')
+assert(clampSeekTime(-2000, 10) === 0, '负时间夹到 0')
+assert(clampSeekTime(5000, NaN) === 0, '时长未知时归零')
 
 console.log(failures === 0 ? '\n全部测试通过 ✅' : `\n${failures} 项失败 ❌`)
 process.exit(failures === 0 ? 0 : 1)

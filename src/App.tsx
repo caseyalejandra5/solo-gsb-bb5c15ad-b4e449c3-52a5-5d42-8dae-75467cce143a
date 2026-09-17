@@ -1,6 +1,7 @@
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import CueTable, { type FilterMode } from './components/CueTable'
 import PlanImportDialog from './components/PlanImportDialog'
+import VideoPreview, { type VideoSource } from './components/VideoPreview'
 import { buildSrt, type Cue, parseSrt } from './lib/srt'
 import {
   buildAnchors,
@@ -8,6 +9,7 @@ import {
   validateMapped,
   type Anchor,
 } from './lib/anchor'
+import { activeCueIndexes, clampSeekTime } from './lib/sync'
 import { formatTime, parseTime } from './lib/time'
 import { parsePlan, previewPlan, serializePlan, type PlanPreview } from './lib/plan'
 import { SAMPLE_SRT } from './sample'
@@ -27,8 +29,11 @@ export default function App() {
   const [dragging, setDragging] = useState(false)
   const [planPreview, setPlanPreview] = useState<PlanPreview | null>(null)
   const [planFileName, setPlanFileName] = useState('')
+  const [video, setVideo] = useState<VideoSource | null>(null)
+  const [playheadMs, setPlayheadMs] = useState(0)
   const fileRef = useRef<HTMLInputElement>(null)
   const planFileRef = useRef<HTMLInputElement>(null)
+  const videoRef = useRef<HTMLVideoElement>(null)
   const noticeTimer = useRef<number | undefined>(undefined)
 
   const lines = useMemo(() => (cues ? mapCues(cues, anchors) : []), [cues, anchors])
@@ -39,6 +44,27 @@ export default function App() {
     return set.size
   }, [issues])
   const hasErrors = errorCount > 0
+
+  // 当前播放时刻处于激活状态的字幕；锚点编辑会改变 lines，从而立即刷新高亮
+  const activeIdx = useMemo(
+    () => (video ? activeCueIndexes(lines, playheadMs) : []),
+    [video, lines, playheadMs],
+  )
+  // 内容不变时保持 Set 引用稳定，避免整表随播放进度反复重渲染
+  const activeKey = activeIdx.join(',')
+  const activeSet = useMemo(() => new Set(activeIdx), [activeKey])
+  const activeLines = useMemo(
+    () => lines.filter((line) => activeSet.has(line.index)),
+    [lines, activeSet],
+  )
+
+  // 对象 URL 生命周期：替换 / 移除视频或组件卸载时，释放旧的对象 URL
+  useEffect(() => {
+    const url = video?.url
+    return () => {
+      if (url) URL.revokeObjectURL(url)
+    }
+  }, [video])
 
   const flash = useCallback((n: Notice) => {
     setNotice(n)
@@ -69,6 +95,13 @@ export default function App() {
       setFilter('all')
       setPlanPreview(null)
       setPlanFileName('')
+      // 导入新 SRT 时保留已载入的视频，仅重置播放位置
+      const v = videoRef.current
+      if (v) {
+        v.pause()
+        v.currentTime = 0
+      }
+      setPlayheadMs(0)
       flash({
         level: 'info',
         text:
@@ -88,6 +121,38 @@ export default function App() {
     },
     [flash, loadSrt],
   )
+
+  /** 载入本地视频：仅创建对象 URL 供 <video> 使用，旧 URL 由上面的 effect 释放。 */
+  const pickVideo = useCallback(
+    (file: File) => {
+      setVideo({ url: URL.createObjectURL(file), name: file.name })
+      setPlayheadMs(0)
+      flash({
+        level: 'info',
+        text: `已载入视频「${file.name}」，仅通过本地对象 URL 使用，不会上传。`,
+      })
+    },
+    [flash],
+  )
+
+  const unloadVideo = useCallback(() => {
+    setVideo(null)
+    setPlayheadMs(0)
+    flash({ level: 'info', text: '已移除视频，旧的对象 URL 已释放。' })
+  }, [flash])
+
+  const onVideoError = useCallback(() => {
+    flash({ level: 'error', text: '视频加载失败：浏览器可能不支持该格式，请换用可播放的视频文件。' })
+  }, [flash])
+
+  /** 点击字幕行：跳到其校准后起始时间；超出视频时长则停在末尾。 */
+  const seekTo = useCallback((ms: number) => {
+    const v = videoRef.current
+    if (!v || !Number.isFinite(v.duration)) return
+    const t = clampSeekTime(ms, v.duration)
+    v.currentTime = t
+    setPlayheadMs(t * 1000)
+  }, [])
 
   /** 为新锚点挑选合法的默认目标时间：尽量保持线性比例并取前后目标的中点。 */
   const defaultTarget = useCallback(
@@ -291,11 +356,14 @@ export default function App() {
       if (!file) return
       if (/\.json$/i.test(file.name)) {
         openPlanFile(file)
+      } else if (file.type.startsWith('video/')) {
+        if (cues) pickVideo(file)
+        else flash({ level: 'error', text: '请先导入 SRT 字幕，再选择视频文件。' })
       } else {
         onFile(file)
       }
     },
-    [onFile, openPlanFile],
+    [onFile, openPlanFile, pickVideo, cues, flash],
   )
 
   return (
@@ -416,11 +484,22 @@ export default function App() {
       ) : (
         <>
           <Rules anchors={anchors} />
+          <VideoPreview
+            video={video}
+            videoRef={videoRef}
+            activeLines={activeLines}
+            onPickVideo={pickVideo}
+            onUnloadVideo={unloadVideo}
+            onTimeChange={setPlayheadMs}
+            onVideoError={onVideoError}
+          />
           <CueTable
             lines={lines}
             anchors={anchors}
             issues={issues}
             filter={filter}
+            activeSet={activeSet}
+            onSeekToStart={video ? seekTo : undefined}
             onAddAnchor={addAnchor}
             onRemoveAnchor={removeAnchor}
             onEditAnchor={editAnchor}
@@ -443,7 +522,9 @@ export default function App() {
         />
       )}
 
-      {dragging && <div className="drop-mask">松开以导入文件（.srt 字幕 / .json 锚点方案）</div>}
+      {dragging && (
+        <div className="drop-mask">松开以导入文件（.srt 字幕 / .json 锚点方案 / 视频文件）</div>
+      )}
     </div>
   )
 }

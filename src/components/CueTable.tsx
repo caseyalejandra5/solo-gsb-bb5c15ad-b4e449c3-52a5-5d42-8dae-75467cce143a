@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import type { Anchor, Issue, MappedLine } from '../lib/anchor'
 import { ISSUE_LABEL } from '../lib/anchor'
 import { formatTime } from '../lib/time'
@@ -10,6 +11,10 @@ interface Props {
   anchors: Anchor[]
   issues: Map<number, Issue[]>
   filter: FilterMode
+  /** 视频当前时刻处于激活状态的字幕索引（用于高亮行）。 */
+  activeSet: ReadonlySet<number>
+  /** 提供时点击字幕行可跳转到其校准后起始时间（未载入视频时不提供）。 */
+  onSeekToStart?: (ms: number) => void
   onAddAnchor: (index: number) => void
   onRemoveAnchor: (source: number) => void
   onEditAnchor: (source: number, targetText: string) => boolean
@@ -21,11 +26,13 @@ function formatDelta(ms: number): string {
   return `${sign}${formatTime(v)}`
 }
 
-export default function CueTable({
+function CueTable({
   lines,
   anchors,
   issues,
   filter,
+  activeSet,
+  onSeekToStart,
   onAddAnchor,
   onRemoveAnchor,
   onEditAnchor,
@@ -57,8 +64,31 @@ export default function CueTable({
             const anchor = anchorBySource.get(line.start)
             const lineIssues = issues.get(line.index) ?? []
             const hasError = lineIssues.length > 0
+            const isActive = activeSet.has(line.index)
+            const rowClass =
+              [
+                hasError ? 'row-error' : '',
+                isActive ? 'row-active' : '',
+                onSeekToStart ? 'row-seekable' : '',
+              ]
+                .filter(Boolean)
+                .join(' ') || undefined
             return (
-              <tr key={line.index} className={hasError ? 'row-error' : ''}>
+              <tr
+                key={line.index}
+                className={rowClass}
+                title={onSeekToStart ? '点击跳转到该校准后起始时间' : undefined}
+                onClick={
+                  onSeekToStart
+                    ? (e) => {
+                        // 行内的按钮 / 输入框保持自身行为，不触发跳转
+                        if ((e.target as HTMLElement).closest('button, input, select, textarea, a'))
+                          return
+                        onSeekToStart(line.newStart)
+                      }
+                    : undefined
+                }
+              >
                 <td className="col-no">{line.id}</td>
                 <td className="col-time mono">
                   <span className={line.newStart < 0 ? 'bad-time' : ''}>
@@ -140,6 +170,9 @@ export default function CueTable({
     </div>
   )
 }
+
+// 播放进度高频变化时，仅当高亮集合等 props 真正变化才重渲染整表
+export default memo(CueTable)
 
 function deltaClass(line: MappedLine): string {
   const d = line.newStart - line.start
